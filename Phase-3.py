@@ -1,8 +1,10 @@
 import streamlit as st
 import pandas as pd
-import requests
+import numpy as np
 import matplotlib.pyplot as plt
+import requests
 from datetime import date, timedelta
+from io import StringIO
 
 st.set_page_config(
     page_title="Weather Data Analysis",
@@ -10,230 +12,431 @@ st.set_page_config(
     layout="wide"
 )
 
-# Dark theme
-st.markdown("""
+BG = "#0b1220"
+PANEL = "#162338"
+TEXT = "#e5eef8"
+ACCENT = "#22d3ee"
+
+st.markdown(f"""
 <style>
-.stApp {
-    background: #0b1220;
-    color: #e5eef8;
-}
-h1, h2, h3 {
-    color: #22d3ee;
-}
-[data-testid="stMetric"] {
-    background: #162338;
+.stApp {{
+    background: {BG};
+    color: {TEXT};
+}}
+h1, h2, h3 {{
+    color: {ACCENT};
+}}
+[data-testid="stMetric"] {{
+    background: {PANEL};
     border: 1px solid #2b3b50;
-    padding: 18px;
+    padding: 15px;
     border-radius: 12px;
-}
+}}
 </style>
 """, unsafe_allow_html=True)
 
 st.title("🌦️ Weather Data Analysis System")
-st.write("Search weather by selecting location and date.")
+st.write("Analyze weather data through CSV upload or location-based weather search.")
 
 st.divider()
 
-# Location input
-city = st.text_input(
-    "🔍 Enter City Name",
-    placeholder="Example: Nagpur, Mumbai, Pune"
+source = st.radio(
+    "Select Data Source",
+    ["Search by Location", "Upload CSV"],
+    horizontal=True
 )
 
-# Date selection
-selected_date = st.date_input(
-    "📅 Select Weather Date",
-    value=date.today(),
-    min_value=date(1940, 1, 1),
-    max_value=date.today() + timedelta(days=16)
-)
+today = date.today()
 
-# Search button
-if st.button("Search Weather", type="primary"):
+def fetch_weather(city, start_date, end_date):
+    geo_url = "https://geocoding-api.open-meteo.com/v1/search"
 
-    if not city.strip():
-        st.warning("Please enter a location.")
+    geo_response = requests.get(
+        geo_url,
+        params={
+            "name": city,
+            "count": 5,
+            "language": "en",
+            "format": "json"
+        },
+        timeout=20
+    )
+    geo_response.raise_for_status()
 
+    locations = geo_response.json().get("results", [])
+
+    if not locations:
+        raise ValueError("Location not found. Please enter a valid city.")
+
+    location = locations[0]
+
+    cutoff = today - timedelta(days=92)
+    segments = []
+
+    if start_date < cutoff:
+        old_end = min(end_date, cutoff - timedelta(days=1))
+        segments.append((start_date, old_end, "archive"))
+
+    recent_start = max(start_date, cutoff)
+
+    if recent_start <= end_date:
+        segments.append((recent_start, end_date, "forecast"))
+
+    all_data = []
+
+    for seg_start, seg_end, api_type in segments:
+        if api_type == "archive":
+            url = "https://archive-api.open-meteo.com/v1/archive"
+        else:
+            url = "https://api.open-meteo.com/v1/forecast"
+
+        params = {
+            "latitude": location["latitude"],
+            "longitude": location["longitude"],
+            "start_date": seg_start.isoformat(),
+            "end_date": seg_end.isoformat(),
+            "daily": [
+                "temperature_2m_mean",
+                "precipitation_sum",
+                "relative_humidity_2m_mean",
+                "wind_speed_10m_max"
+            ],
+            "timezone": "auto"
+        }
+
+        response = requests.get(
+            url,
+            params=params,
+            timeout=30
+        )
+        response.raise_for_status()
+
+        result = response.json()
+
+        if "daily" not in result:
+            raise ValueError("Weather data is not available for these dates.")
+
+        daily = pd.DataFrame({
+            "Date": result["daily"]["time"],
+            "Temperature": result["daily"]["temperature_2m_mean"],
+            "Rainfall": result["daily"]["precipitation_sum"],
+            "Humidity": result["daily"]["relative_humidity_2m_mean"],
+            "Wind Speed": result["daily"]["wind_speed_10m_max"]
+        })
+
+        all_data.append(daily)
+
+    if not all_data:
+        raise ValueError("No weather data available for the selected dates.")
+
+    weather_data = pd.concat(all_data, ignore_index=True)
+
+    weather_data["Date"] = pd.to_datetime(weather_data["Date"])
+    weather_data = weather_data.dropna(subset=["Date"])
+    weather_data = weather_data.sort_values("Date")
+
+    return weather_data, location
+
+
+def analyze_weather(data, location_name):
+    data = data.copy()
+
+    data["Date"] = pd.to_datetime(data["Date"], errors="coerce")
+
+    for column in ["Temperature", "Rainfall", "Humidity", "Wind Speed"]:
+        if column not in data.columns:
+            data[column] = np.nan
+        data[column] = pd.to_numeric(data[column], errors="coerce")
+
+    data = data.dropna(subset=["Date", "Temperature", "Rainfall", "Humidity"])
+    data = data[data["Rainfall"] >= 0]
+    data = data[data["Humidity"].between(0, 100)]
+    data = data.sort_values("Date")
+
+    if data.empty:
+        st.warning("No valid weather records found.")
+        return
+
+    st.success(f"Weather analysis completed for {location_name}")
+
+    st.subheader("🌤️ Weather Summary")
+
+    c1, c2, c3, c4 = st.columns(4)
+
+    c1.metric(
+        "Average Temperature",
+        f"{data['Temperature'].mean():.1f} °C"
+    )
+
+    c2.metric(
+        "Total Rainfall",
+        f"{data['Rainfall'].sum():.1f} mm"
+    )
+
+    c3.metric(
+        "Average Humidity",
+        f"{data['Humidity'].mean():.1f}%"
+    )
+
+    if data["Wind Speed"].notna().any():
+        c4.metric(
+            "Average Wind Speed",
+            f"{data['Wind Speed'].mean():.1f} km/h"
+        )
     else:
+        c4.metric("Average Wind Speed", "N/A")
+
+    st.divider()
+
+    st.subheader("📋 Weather Records")
+
+    st.dataframe(
+        data,
+        use_container_width=True,
+        hide_index=True
+    )
+
+    st.subheader("🌡️ Temperature Analysis")
+
+    fig, ax = plt.subplots(figsize=(10, 4))
+
+    ax.plot(
+        data["Date"],
+        data["Temperature"],
+        marker="o",
+        label="Temperature"
+    )
+
+    ax.set_xlabel("Date")
+    ax.set_ylabel("Temperature (°C)")
+    ax.legend()
+    ax.grid(alpha=0.3)
+
+    plt.xticks(rotation=30)
+    fig.tight_layout()
+    st.pyplot(fig)
+    plt.close(fig)
+
+    st.subheader("🌧️ Rainfall Analysis")
+
+    fig, ax = plt.subplots(figsize=(10, 4))
+
+    ax.bar(
+        data["Date"],
+        data["Rainfall"]
+    )
+
+    ax.set_xlabel("Date")
+    ax.set_ylabel("Rainfall (mm)")
+    ax.grid(axis="y", alpha=0.3)
+
+    plt.xticks(rotation=30)
+    fig.tight_layout()
+    st.pyplot(fig)
+    plt.close(fig)
+
+    st.subheader("💧 Humidity Analysis")
+
+    st.line_chart(
+        data.set_index("Date")[["Humidity"]]
+    )
+
+    if data["Wind Speed"].notna().any():
+        st.subheader("💨 Wind Speed Analysis")
+
+        st.line_chart(
+            data.set_index("Date")[["Wind Speed"]]
+        )
+
+    st.divider()
+
+    st.subheader("📊 Statistical Report")
+
+    report = data[
+        ["Temperature", "Rainfall", "Humidity", "Wind Speed"]
+    ].agg(["mean", "min", "max", "std", "sum"])
+
+    st.dataframe(
+        report.round(2),
+        use_container_width=True
+    )
+
+    csv = data.to_csv(index=False).encode("utf-8")
+
+    st.download_button(
+        "⬇️ Download Weather Data",
+        data=csv,
+        file_name="weather_analysis_report.csv",
+        mime="text/csv"
+    )
+
+    report_csv = report.to_csv().encode("utf-8")
+
+    st.download_button(
+        "⬇️ Download Statistical Report",
+        data=report_csv,
+        file_name="weather_statistical_report.csv",
+        mime="text/csv"
+    )
+
+
+if source == "Search by Location":
+
+    st.subheader("📍 Location-Based Weather Search")
+
+    with st.form("weather_search_form"):
+        city = st.text_input(
+            "Enter City or Location",
+            placeholder="Example: Nagpur, Mumbai, Pune, Delhi"
+        )
+
+        mode = st.radio(
+            "Select Date Option",
+            ["Single Date", "Date Range"],
+            horizontal=True
+        )
+
+        if mode == "Single Date":
+            start_date = st.date_input(
+                "Select Weather Date",
+                value=today,
+                min_value=date(1940, 1, 1),
+                max_value=today + timedelta(days=16)
+            )
+            end_date = start_date
+
+        else:
+            start_date = st.date_input(
+                "Start Date",
+                value=today - timedelta(days=6),
+                min_value=date(1940, 1, 1),
+                max_value=today + timedelta(days=16)
+            )
+
+            end_date = st.date_input(
+                "End Date",
+                value=today,
+                min_value=date(1940, 1, 1),
+                max_value=today + timedelta(days=16)
+            )
+
+        search = st.form_submit_button(
+            "🔍 Search Weather",
+            type="primary"
+        )
+
+    if search:
+        st.session_state.pop("weather_data", None)
+
+        if not city.strip():
+            st.warning("Please enter a location.")
+
+        elif start_date > end_date:
+            st.error("Start date cannot be after end date.")
+
+        else:
+            try:
+                with st.spinner("Fetching weather information..."):
+                    weather_data, location = fetch_weather(
+                        city,
+                        start_date,
+                        end_date
+                    )
+
+                st.session_state["weather_data"] = weather_data
+                st.session_state["location_name"] = (
+                    f"{location['name']}, "
+                    f"{location.get('admin1', '')}, "
+                    f"{location.get('country', '')}"
+                )
+                st.session_state["active_source"] = "Search by Location"
+
+            except requests.RequestException as e:
+                st.error(f"API connection error: {e}")
+
+            except (ValueError, KeyError, TypeError) as e:
+                st.error(f"Error: {e}")
+
+    if (
+        "weather_data" in st.session_state
+        and st.session_state.get("active_source") == "Search by Location"
+    ):
+        st.caption(
+            f"Location: {st.session_state['location_name']}"
+        )
+        analyze_weather(
+            st.session_state["weather_data"],
+            st.session_state["location_name"]
+        )
+
+else:
+
+    st.subheader("📂 Upload Weather CSV")
+
+    uploaded_file = st.file_uploader(
+        "Upload your weather CSV file",
+        type=["csv"]
+    )
+
+    if uploaded_file is not None:
         try:
-            # Step 1: Search location
-            geo_url = "https://geocoding-api.open-meteo.com/v1/search"
+            data = pd.read_csv(uploaded_file)
 
-            geo_params = {
-                "name": city,
-                "count": 10,
-                "language": "en",
-                "format": "json"
-            }
+            required_columns = [
+                "Date",
+                "Temperature",
+                "Rainfall",
+                "Humidity"
+            ]
 
-            geo_response = requests.get(
-                geo_url,
-                params=geo_params,
-                timeout=15
-            )
-            geo_response.raise_for_status()
-
-            locations = geo_response.json().get("results", [])
-
-            if not locations:
-                st.error("Location not found.")
-                st.stop()
-
-            # Step 2: Select location
-            location_options = {
-                f"{loc['name']}, {loc.get('admin1', '')}, "
-                f"{loc.get('country', '')}": loc
-                for loc in locations
-            }
-
-            selected_location = st.selectbox(
-                "📍 Select Exact Location",
-                list(location_options.keys())
-            )
-
-            location = location_options[selected_location]
-
-            # Step 3: Select API according to date
-            if selected_date < date.today():
-                weather_url = (
-                    "https://archive-api.open-meteo.com/v1/archive"
+            if not all(col in data.columns for col in required_columns):
+                st.error(
+                    "CSV must contain Date, Temperature, Rainfall and Humidity columns."
                 )
-                source = "Historical Weather Data"
-
-            elif selected_date == date.today():
-                weather_url = (
-                    "https://api.open-meteo.com/v1/forecast"
-                )
-                source = "Current Weather Data"
 
             else:
-                weather_url = (
-                    "https://api.open-meteo.com/v1/forecast"
+                data["Date"] = pd.to_datetime(
+                    data["Date"],
+                    errors="coerce"
                 )
-                source = "Weather Forecast"
 
-            weather_params = {
-                "latitude": location["latitude"],
-                "longitude": location["longitude"],
-                "start_date": selected_date.isoformat(),
-                "end_date": selected_date.isoformat(),
-                "daily": [
-                    "weather_code",
-                    "temperature_2m_max",
-                    "temperature_2m_min",
-                    "precipitation_sum",
-                    "wind_speed_10m_max"
-                ],
-                "hourly": [
-                    "temperature_2m",
-                    "relative_humidity_2m",
-                    "precipitation",
-                    "wind_speed_10m"
-                ],
-                "timezone": "auto"
-            }
+                min_date = data["Date"].min().date()
+                max_date = data["Date"].max().date()
 
-            response = requests.get(
-                weather_url,
-                params=weather_params,
-                timeout=20
-            )
-            response.raise_for_status()
+                st.subheader("📅 Select Date Range")
 
-            weather = response.json()
+                col1, col2 = st.columns(2)
 
-            # Step 4: Display information
-            st.success(f"Weather found: {selected_location}")
-            st.subheader("🌤️ Weather Details")
+                with col1:
+                    start_date = st.date_input(
+                        "Start Date",
+                        value=min_date
+                    )
 
-            st.caption(
-                f"Selected Date: {selected_date} | "
-                f"Data Type: {source}"
-            )
+                with col2:
+                    end_date = st.date_input(
+                        "End Date",
+                        value=max_date
+                    )
 
-            daily = weather["daily"]
-            hourly = weather["hourly"]
+                if start_date <= end_date:
+                    filtered_data = data[
+                        (data["Date"].dt.date >= start_date) &
+                        (data["Date"].dt.date <= end_date)
+                    ]
 
-            c1, c2, c3, c4 = st.columns(4)
+                    analyze_weather(
+                        filtered_data,
+                        "Uploaded CSV Data"
+                    )
+                else:
+                    st.error("Start date cannot be after end date.")
 
-            c1.metric(
-                "Maximum Temperature",
-                f"{daily['temperature_2m_max'][0]} °C"
-            )
-
-            c2.metric(
-                "Minimum Temperature",
-                f"{daily['temperature_2m_min'][0]} °C"
-            )
-
-            c3.metric(
-                "Total Rainfall",
-                f"{daily['precipitation_sum'][0]} mm"
-            )
-
-            c4.metric(
-                "Maximum Wind Speed",
-                f"{daily['wind_speed_10m_max'][0]} km/h"
-            )
-
-            # Step 5: Hourly data
-            st.divider()
-            st.subheader("⏰ Hourly Weather Report")
-
-            hourly_df = pd.DataFrame({
-                "Time": hourly["time"],
-                "Temperature (°C)": hourly["temperature_2m"],
-                "Humidity (%)": hourly["relative_humidity_2m"],
-                "Rainfall (mm)": hourly["precipitation"],
-                "Wind Speed (km/h)": hourly["wind_speed_10m"]
-            })
-
-            st.dataframe(
-                hourly_df,
-                use_container_width=True,
-                hide_index=True
-            )
-
-            # Step 6: Temperature graph
-            st.subheader("📊 Hourly Temperature Analysis")
-
-            fig, ax = plt.subplots(figsize=(10, 4))
-
-            ax.plot(
-                hourly_df["Time"],
-                hourly_df["Temperature (°C)"],
-                marker="o",
-                color="#22d3ee"
-            )
-
-            ax.set_xlabel("Time")
-            ax.set_ylabel("Temperature (°C)")
-            ax.set_title("Temperature Variation")
-            ax.grid(alpha=0.3)
-
-            plt.xticks(rotation=45)
-            fig.tight_layout()
-
-            st.pyplot(fig)
-            plt.close(fig)
-
-            # Step 7: Download report
-            csv = hourly_df.to_csv(index=False).encode("utf-8")
-
-            st.download_button(
-                "⬇️ Download Weather Report",
-                data=csv,
-                file_name="weather_report.csv",
-                mime="text/csv"
-            )
-
-            st.success("Weather analysis completed successfully.")
-
-        except requests.RequestException as e:
-            st.error(f"API connection error: {e}")
-
-        except (KeyError, IndexError, ValueError) as e:
-            st.error(f"Weather data processing error: {e}")
+        except Exception as e:
+            st.error(f"Unable to read CSV file: {e}")
 
 st.divider()
-st.caption("Weather Data Analysis System | Python + Streamlit")
+
+st.caption(
+    "Weather Data Analysis System | Python Project - Phase 3"
+)
