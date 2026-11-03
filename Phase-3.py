@@ -4,7 +4,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 import requests
 from datetime import date, timedelta
-from io import StringIO
 
 st.set_page_config(
     page_title="Weather Data Analysis",
@@ -36,17 +35,12 @@ h1, h2, h3 {{
 """, unsafe_allow_html=True)
 
 st.title("🌦️ Weather Data Analysis System")
-st.write("Analyze weather data through CSV upload or location-based weather search.")
+st.write("Analyze weather data using CSV upload or location-based weather search.")
 
 st.divider()
 
-source = st.radio(
-    "Select Data Source",
-    ["Search by Location", "Upload CSV"],
-    horizontal=True
-)
-
 today = date.today()
+
 
 def fetch_weather(city, start_date, end_date):
     geo_url = "https://geocoding-api.open-meteo.com/v1/search"
@@ -61,12 +55,13 @@ def fetch_weather(city, start_date, end_date):
         },
         timeout=20
     )
+
     geo_response.raise_for_status()
 
     locations = geo_response.json().get("results", [])
 
     if not locations:
-        raise ValueError("Location not found. Please enter a valid city.")
+        raise ValueError("Location not found. Enter a valid city.")
 
     location = locations[0]
 
@@ -85,10 +80,11 @@ def fetch_weather(city, start_date, end_date):
     all_data = []
 
     for seg_start, seg_end, api_type in segments:
+
         if api_type == "archive":
-            url = "https://archive-api.open-meteo.com/v1/archive"
+            weather_url = "https://archive-api.open-meteo.com/v1/archive"
         else:
-            url = "https://api.open-meteo.com/v1/forecast"
+            weather_url = "https://api.open-meteo.com/v1/forecast"
 
         params = {
             "latitude": location["latitude"],
@@ -105,16 +101,17 @@ def fetch_weather(city, start_date, end_date):
         }
 
         response = requests.get(
-            url,
+            weather_url,
             params=params,
             timeout=30
         )
+
         response.raise_for_status()
 
         result = response.json()
 
         if "daily" not in result:
-            raise ValueError("Weather data is not available for these dates.")
+            raise ValueError("Weather data is unavailable for these dates.")
 
         daily = pd.DataFrame({
             "Date": result["daily"]["time"],
@@ -127,11 +124,15 @@ def fetch_weather(city, start_date, end_date):
         all_data.append(daily)
 
     if not all_data:
-        raise ValueError("No weather data available for the selected dates.")
+        raise ValueError("No weather records available.")
 
     weather_data = pd.concat(all_data, ignore_index=True)
 
-    weather_data["Date"] = pd.to_datetime(weather_data["Date"])
+    weather_data["Date"] = pd.to_datetime(
+        weather_data["Date"],
+        errors="coerce"
+    )
+
     weather_data = weather_data.dropna(subset=["Date"])
     weather_data = weather_data.sort_values("Date")
 
@@ -141,14 +142,24 @@ def fetch_weather(city, start_date, end_date):
 def analyze_weather(data, location_name):
     data = data.copy()
 
-    data["Date"] = pd.to_datetime(data["Date"], errors="coerce")
+    data["Date"] = pd.to_datetime(
+        data["Date"],
+        errors="coerce"
+    )
 
     for column in ["Temperature", "Rainfall", "Humidity", "Wind Speed"]:
         if column not in data.columns:
             data[column] = np.nan
-        data[column] = pd.to_numeric(data[column], errors="coerce")
 
-    data = data.dropna(subset=["Date", "Temperature", "Rainfall", "Humidity"])
+        data[column] = pd.to_numeric(
+            data[column],
+            errors="coerce"
+        )
+
+    data = data.dropna(
+        subset=["Date", "Temperature", "Rainfall", "Humidity"]
+    )
+
     data = data[data["Rainfall"] >= 0]
     data = data[data["Humidity"].between(0, 100)]
     data = data.sort_values("Date")
@@ -214,6 +225,7 @@ def analyze_weather(data, location_name):
 
     plt.xticks(rotation=30)
     fig.tight_layout()
+
     st.pyplot(fig)
     plt.close(fig)
 
@@ -232,6 +244,7 @@ def analyze_weather(data, location_name):
 
     plt.xticks(rotation=30)
     fig.tight_layout()
+
     st.pyplot(fig)
     plt.close(fig)
 
@@ -280,11 +293,18 @@ def analyze_weather(data, location_name):
     )
 
 
+source = st.radio(
+    "Select Data Source",
+    ["Search by Location", "Upload CSV"],
+    horizontal=True
+)
+
 if source == "Search by Location":
 
     st.subheader("📍 Location-Based Weather Search")
 
     with st.form("weather_search_form"):
+
         city = st.text_input(
             "Enter City or Location",
             placeholder="Example: Nagpur, Mumbai, Pune, Delhi"
@@ -297,28 +317,30 @@ if source == "Search by Location":
         )
 
         if mode == "Single Date":
+
             start_date = st.date_input(
                 "Select Weather Date",
                 value=today,
                 min_value=date(1940, 1, 1),
                 max_value=today + timedelta(days=16)
             )
+
             end_date = start_date
 
         else:
-            start_date = st.date_input(
-                "Start Date",
-                value=today - timedelta(days=6),
+
+            selected_dates = st.date_input(
+                "Select Start Date and End Date",
+                value=(today - timedelta(days=6), today),
                 min_value=date(1940, 1, 1),
                 max_value=today + timedelta(days=16)
             )
 
-            end_date = st.date_input(
-                "End Date",
-                value=today,
-                min_value=date(1940, 1, 1),
-                max_value=today + timedelta(days=16)
-            )
+            if len(selected_dates) == 2:
+                start_date, end_date = selected_dates
+            else:
+                start_date = selected_dates[0]
+                end_date = selected_dates[0]
 
         search = st.form_submit_button(
             "🔍 Search Weather",
@@ -326,6 +348,7 @@ if source == "Search by Location":
         )
 
     if search:
+
         st.session_state.pop("weather_data", None)
 
         if not city.strip():
@@ -337,6 +360,7 @@ if source == "Search by Location":
         else:
             try:
                 with st.spinner("Fetching weather information..."):
+
                     weather_data, location = fetch_weather(
                         city,
                         start_date,
@@ -344,11 +368,13 @@ if source == "Search by Location":
                     )
 
                 st.session_state["weather_data"] = weather_data
+
                 st.session_state["location_name"] = (
                     f"{location['name']}, "
                     f"{location.get('admin1', '')}, "
                     f"{location.get('country', '')}"
                 )
+
                 st.session_state["active_source"] = "Search by Location"
 
             except requests.RequestException as e:
@@ -364,6 +390,7 @@ if source == "Search by Location":
         st.caption(
             f"Location: {st.session_state['location_name']}"
         )
+
         analyze_weather(
             st.session_state["weather_data"],
             st.session_state["location_name"]
@@ -379,6 +406,7 @@ else:
     )
 
     if uploaded_file is not None:
+
         try:
             data = pd.read_csv(uploaded_file)
 
@@ -389,48 +417,59 @@ else:
                 "Humidity"
             ]
 
-            if not all(col in data.columns for col in required_columns):
+            if not all(
+                col in data.columns for col in required_columns
+            ):
                 st.error(
                     "CSV must contain Date, Temperature, Rainfall and Humidity columns."
                 )
 
             else:
+
                 data["Date"] = pd.to_datetime(
                     data["Date"],
                     errors="coerce"
                 )
 
-                min_date = data["Date"].min().date()
-                max_date = data["Date"].max().date()
+                valid_dates = data["Date"].dropna()
 
-                st.subheader("📅 Select Date Range")
+                if valid_dates.empty:
+                    st.error("No valid dates found in CSV.")
 
-                col1, col2 = st.columns(2)
-
-                with col1:
-                    start_date = st.date_input(
-                        "Start Date",
-                        value=min_date
-                    )
-
-                with col2:
-                    end_date = st.date_input(
-                        "End Date",
-                        value=max_date
-                    )
-
-                if start_date <= end_date:
-                    filtered_data = data[
-                        (data["Date"].dt.date >= start_date) &
-                        (data["Date"].dt.date <= end_date)
-                    ]
-
-                    analyze_weather(
-                        filtered_data,
-                        "Uploaded CSV Data"
-                    )
                 else:
-                    st.error("Start date cannot be after end date.")
+                    min_date = valid_dates.min().date()
+                    max_date = valid_dates.max().date()
+
+                    st.subheader("📅 Select Date Range")
+
+                    col1, col2 = st.columns(2)
+
+                    with col1:
+                        start_date = st.date_input(
+                            "Start Date",
+                            value=min_date
+                        )
+
+                    with col2:
+                        end_date = st.date_input(
+                            "End Date",
+                            value=max_date
+                        )
+
+                    if start_date <= end_date:
+
+                        filtered_data = data[
+                            (data["Date"].dt.date >= start_date) &
+                            (data["Date"].dt.date <= end_date)
+                        ]
+
+                        analyze_weather(
+                            filtered_data,
+                            "Uploaded CSV Data"
+                        )
+
+                    else:
+                        st.error("Start date cannot be after end date.")
 
         except Exception as e:
             st.error(f"Unable to read CSV file: {e}")
