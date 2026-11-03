@@ -1,230 +1,239 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
+import requests
 import matplotlib.pyplot as plt
-from io import StringIO
+from datetime import date, timedelta
 
 st.set_page_config(
     page_title="Weather Data Analysis",
     page_icon="🌦️",
-    layout="wide",
+    layout="wide"
 )
 
-# Dark dashboard palette
-BG = "#0b1220"
-PANEL = "#111c2e"
-PANEL_ALT = "#162338"
-TEXT = "#e5eef8"
-MUTED = "#94a9c2"
-GRID = "#2b3b50"
-ACCENT = "#22d3ee"
-
-st.markdown(
-    f"""
-    <style>
-    :root {{ color-scheme: dark; }}
-    .stApp {{ background: {BG}; color: {TEXT}; }}
-    [data-testid="stHeader"] {{ background: rgba(11, 18, 32, 0.92); }}
-    [data-testid="stSidebar"] {{ background: #0e1929; border-right: 1px solid {GRID}; }}
-    [data-testid="stSidebar"] * {{ color: {TEXT}; }}
-    [data-testid="stMetric"] {{
-        background: linear-gradient(145deg, {PANEL}, {PANEL_ALT});
-        padding: 18px; border-radius: 12px; border: 1px solid {GRID};
-        border-left: 4px solid {ACCENT};
-    }}
-    [data-testid="stMetricLabel"] {{ color: {MUTED}; }}
-    [data-testid="stMetricValue"] {{ color: {TEXT}; }}
-    h1, h2, h3 {{ color: #d9f5ff; }}
-    p, label, [data-testid="stCaptionContainer"] {{ color: {MUTED}; }}
-    [data-testid="stDataFrame"] {{ border: 1px solid {GRID}; border-radius: 10px; }}
-    [data-baseweb="select"] > div, [data-baseweb="input"] > div {{
-        background: {PANEL}; border-color: {GRID};
-    }}
-    [data-testid="stFileUploader"] section {{ background: {PANEL}; border-color: {GRID}; }}
-    div.stButton > button, div.stDownloadButton > button {{
-        background: {PANEL_ALT}; color: {TEXT}; border: 1px solid {GRID};
-        border-radius: 8px;
-    }}
-    div.stButton > button:hover, div.stDownloadButton > button:hover {{
-        border-color: {ACCENT}; color: {ACCENT};
-    }}
-    hr {{ border-color: {GRID}; }}
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+# Dark theme
+st.markdown("""
+<style>
+.stApp {
+    background: #0b1220;
+    color: #e5eef8;
+}
+h1, h2, h3 {
+    color: #22d3ee;
+}
+[data-testid="stMetric"] {
+    background: #162338;
+    border: 1px solid #2b3b50;
+    padding: 18px;
+    border-radius: 12px;
+}
+</style>
+""", unsafe_allow_html=True)
 
 st.title("🌦️ Weather Data Analysis System")
-st.write("Interactive climate dashboard for historical weather data.")
-
-sample = pd.DataFrame({
-    "Date": pd.date_range("2026-01-01", periods=15),
-    "Temperature": [24, 25, 23, 26, 27, 28, 26, 25, 29, 30, 31, 29, 27, 26, 28],
-    "Rainfall": [2.5, 0, 5.2, 1, 0, 0.5, 3.2, 4.5, 0, 0, 1.5, 3, 6.5, 4.2, 0],
-    "Humidity": [65, 62, 70, 60, 58, 55, 63, 68, 52, 50, 48, 55, 72, 69, 57],
-})
-
-uploaded = st.sidebar.file_uploader("Upload weather CSV", type=["csv"])
-
-if uploaded:
-    try:
-        data = pd.read_csv(uploaded)
-        data.columns = data.columns.str.strip()
-        required = ["Date", "Temperature", "Rainfall", "Humidity"]
-        if not all(c in data.columns for c in required):
-            st.error("CSV must contain Date, Temperature, Rainfall and Humidity columns.")
-            st.stop()
-        data = data[required].copy()
-    except Exception as e:
-        st.error(f"Could not read CSV: {e}")
-        st.stop()
-else:
-    data = sample.copy()
-    st.sidebar.info("Showing sample weather data.")
-
-data["Date"] = pd.to_datetime(data["Date"], errors="coerce")
-for col in ["Temperature", "Rainfall", "Humidity"]:
-    data[col] = pd.to_numeric(data[col], errors="coerce")
-
-data = data.dropna()
-data = data[
-    (data["Rainfall"] >= 0) & (data["Humidity"].between(0, 100))
-].sort_values("Date")
-
-if data.empty:
-    st.warning("No valid weather records available.")
-    st.stop()
-
-st.sidebar.subheader("Filter Data")
-min_date = data["Date"].min().date()
-max_date = data["Date"].max().date()
-date_range = st.sidebar.date_input(
-    "Select date range", value=(min_date, max_date),
-    min_value=min_date, max_value=max_date,
-)
-parameter = st.sidebar.selectbox(
-    "Choose chart parameter", ["Temperature", "Rainfall", "Humidity"]
-)
-
-if isinstance(date_range, (tuple, list)) and len(date_range) == 2:
-    start_date, end_date = date_range
-    filtered = data[data["Date"].dt.date.between(start_date, end_date)]
-else:
-    filtered = data.copy()
-
-if filtered.empty:
-    st.warning("No records found for the selected date range.")
-    st.stop()
-
-st.caption(f"Records analyzed: {len(filtered)}")
-temperature = filtered["Temperature"]
-rainfall = filtered["Rainfall"]
-humidity = filtered["Humidity"]
-
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("Average Temperature", f"{temperature.mean():.2f} °C")
-c2.metric("Total Rainfall", f"{rainfall.sum():.2f} mm")
-c3.metric("Average Humidity", f"{humidity.mean():.2f}%")
-c4.metric("Weather Records", len(filtered))
+st.write("Search weather by selecting location and date.")
 
 st.divider()
-st.header("📊 Interactive Weather Charts")
-left, right = st.columns(2)
 
-def style_axis(ax):
-    ax.set_facecolor(PANEL)
-    ax.tick_params(colors=MUTED)
-    ax.xaxis.label.set_color(MUTED)
-    ax.yaxis.label.set_color(MUTED)
-    ax.title.set_color(TEXT)
-    for spine in ax.spines.values():
-        spine.set_color(GRID)
+# Location input
+city = st.text_input(
+    "🔍 Enter City Name",
+    placeholder="Example: Nagpur, Mumbai, Pune"
+)
 
-with left:
-    st.subheader(f"{parameter} Analysis")
-    fig, ax = plt.subplots(figsize=(8, 4), facecolor=PANEL)
-    if parameter == "Rainfall":
-        ax.bar(filtered["Date"], filtered["Rainfall"], color="#38bdf8")
-        ax.set_ylabel("Rainfall (mm)")
-    elif parameter == "Temperature":
-        ax.plot(filtered["Date"], filtered["Temperature"], marker="o", color="#fb7185")
-        ax.set_ylabel("Temperature (°C)")
+# Date selection
+selected_date = st.date_input(
+    "📅 Select Weather Date",
+    value=date.today(),
+    min_value=date(1940, 1, 1),
+    max_value=date.today() + timedelta(days=16)
+)
+
+# Search button
+if st.button("Search Weather", type="primary"):
+
+    if not city.strip():
+        st.warning("Please enter a location.")
+
     else:
-        ax.plot(filtered["Date"], filtered["Humidity"], marker="o", color="#a78bfa")
-        ax.set_ylabel("Humidity (%)")
-    ax.set_xlabel("Date")
-    ax.grid(True, alpha=0.35, color=GRID)
-    style_axis(ax)
-    fig.autofmt_xdate()
-    fig.tight_layout()
-    st.pyplot(fig)
-    plt.close(fig)
+        try:
+            # Step 1: Search location
+            geo_url = "https://geocoding-api.open-meteo.com/v1/search"
 
-with right:
-    st.subheader("Rainfall Pattern")
-    fig, ax = plt.subplots(figsize=(8, 4), facecolor=PANEL)
-    ax.bar(filtered["Date"], rainfall, color="#38bdf8")
-    ax.set_ylabel("Rainfall (mm)")
-    ax.set_xlabel("Date")
-    ax.grid(axis="y", alpha=0.35, color=GRID)
-    style_axis(ax)
-    fig.autofmt_xdate()
-    fig.tight_layout()
-    st.pyplot(fig)
-    plt.close(fig)
+            geo_params = {
+                "name": city,
+                "count": 10,
+                "language": "en",
+                "format": "json"
+            }
 
-left, right = st.columns(2)
-with left:
-    st.subheader("Humidity Variation")
-    st.line_chart(
-        filtered.set_index("Date")[["Humidity"]], x_label="Date",
-        y_label="Humidity (%)", color="#a78bfa",
-    )
-with right:
-    st.subheader("Temperature Distribution")
-    fig, ax = plt.subplots(figsize=(8, 4), facecolor=PANEL)
-    ax.hist(temperature, bins=7, color="#fb923c", edgecolor=PANEL)
-    ax.set_xlabel("Temperature (°C)")
-    ax.set_ylabel("Number of Days")
-    ax.grid(axis="y", alpha=0.35, color=GRID)
-    style_axis(ax)
-    fig.tight_layout()
-    st.pyplot(fig)
-    plt.close(fig)
+            geo_response = requests.get(
+                geo_url,
+                params=geo_params,
+                timeout=15
+            )
+            geo_response.raise_for_status()
+
+            locations = geo_response.json().get("results", [])
+
+            if not locations:
+                st.error("Location not found.")
+                st.stop()
+
+            # Step 2: Select location
+            location_options = {
+                f"{loc['name']}, {loc.get('admin1', '')}, "
+                f"{loc.get('country', '')}": loc
+                for loc in locations
+            }
+
+            selected_location = st.selectbox(
+                "📍 Select Exact Location",
+                list(location_options.keys())
+            )
+
+            location = location_options[selected_location]
+
+            # Step 3: Select API according to date
+            if selected_date < date.today():
+                weather_url = (
+                    "https://archive-api.open-meteo.com/v1/archive"
+                )
+                source = "Historical Weather Data"
+
+            elif selected_date == date.today():
+                weather_url = (
+                    "https://api.open-meteo.com/v1/forecast"
+                )
+                source = "Current Weather Data"
+
+            else:
+                weather_url = (
+                    "https://api.open-meteo.com/v1/forecast"
+                )
+                source = "Weather Forecast"
+
+            weather_params = {
+                "latitude": location["latitude"],
+                "longitude": location["longitude"],
+                "start_date": selected_date.isoformat(),
+                "end_date": selected_date.isoformat(),
+                "daily": [
+                    "weather_code",
+                    "temperature_2m_max",
+                    "temperature_2m_min",
+                    "precipitation_sum",
+                    "wind_speed_10m_max"
+                ],
+                "hourly": [
+                    "temperature_2m",
+                    "relative_humidity_2m",
+                    "precipitation",
+                    "wind_speed_10m"
+                ],
+                "timezone": "auto"
+            }
+
+            response = requests.get(
+                weather_url,
+                params=weather_params,
+                timeout=20
+            )
+            response.raise_for_status()
+
+            weather = response.json()
+
+            # Step 4: Display information
+            st.success(f"Weather found: {selected_location}")
+            st.subheader("🌤️ Weather Details")
+
+            st.caption(
+                f"Selected Date: {selected_date} | "
+                f"Data Type: {source}"
+            )
+
+            daily = weather["daily"]
+            hourly = weather["hourly"]
+
+            c1, c2, c3, c4 = st.columns(4)
+
+            c1.metric(
+                "Maximum Temperature",
+                f"{daily['temperature_2m_max'][0]} °C"
+            )
+
+            c2.metric(
+                "Minimum Temperature",
+                f"{daily['temperature_2m_min'][0]} °C"
+            )
+
+            c3.metric(
+                "Total Rainfall",
+                f"{daily['precipitation_sum'][0]} mm"
+            )
+
+            c4.metric(
+                "Maximum Wind Speed",
+                f"{daily['wind_speed_10m_max'][0]} km/h"
+            )
+
+            # Step 5: Hourly data
+            st.divider()
+            st.subheader("⏰ Hourly Weather Report")
+
+            hourly_df = pd.DataFrame({
+                "Time": hourly["time"],
+                "Temperature (°C)": hourly["temperature_2m"],
+                "Humidity (%)": hourly["relative_humidity_2m"],
+                "Rainfall (mm)": hourly["precipitation"],
+                "Wind Speed (km/h)": hourly["wind_speed_10m"]
+            })
+
+            st.dataframe(
+                hourly_df,
+                use_container_width=True,
+                hide_index=True
+            )
+
+            # Step 6: Temperature graph
+            st.subheader("📊 Hourly Temperature Analysis")
+
+            fig, ax = plt.subplots(figsize=(10, 4))
+
+            ax.plot(
+                hourly_df["Time"],
+                hourly_df["Temperature (°C)"],
+                marker="o",
+                color="#22d3ee"
+            )
+
+            ax.set_xlabel("Time")
+            ax.set_ylabel("Temperature (°C)")
+            ax.set_title("Temperature Variation")
+            ax.grid(alpha=0.3)
+
+            plt.xticks(rotation=45)
+            fig.tight_layout()
+
+            st.pyplot(fig)
+            plt.close(fig)
+
+            # Step 7: Download report
+            csv = hourly_df.to_csv(index=False).encode("utf-8")
+
+            st.download_button(
+                "⬇️ Download Weather Report",
+                data=csv,
+                file_name="weather_report.csv",
+                mime="text/csv"
+            )
+
+            st.success("Weather analysis completed successfully.")
+
+        except requests.RequestException as e:
+            st.error(f"API connection error: {e}")
+
+        except (KeyError, IndexError, ValueError) as e:
+            st.error(f"Weather data processing error: {e}")
 
 st.divider()
-st.header("📋 Statistical Report")
-
-def statistics(series):
-    return {
-        "Average": series.mean(),
-        "Minimum": series.min(),
-        "Maximum": series.max(),
-        "Standard Deviation": series.std(),
-        "Total": series.sum(),
-    }
-
-report = pd.DataFrame({
-    "Temperature (°C)": statistics(temperature),
-    "Rainfall (mm)": statistics(rainfall),
-    "Humidity (%)": statistics(humidity),
-}).round(2)
-
-st.dataframe(report, use_container_width=True)
-st.subheader("Historical Weather Records")
-st.dataframe(filtered, use_container_width=True, hide_index=True)
-
-csv_data = filtered.to_csv(index=False).encode("utf-8")
-st.download_button(
-    "⬇️ Download Filtered Weather Data", data=csv_data,
-    file_name="weather_data.csv", mime="text/csv",
-)
-report_csv = report.to_csv().encode("utf-8")
-st.download_button(
-    "⬇️ Download Statistical Report", data=report_csv,
-    file_name="weather_statistical_report.csv", mime="text/csv",
-)
-
-st.success("Weather analysis completed successfully.")
-st.markdown("---")
-st.caption("Weather Data Analysis System | Python Project — Phase 3")
+st.caption("Weather Data Analysis System | Python + Streamlit")
